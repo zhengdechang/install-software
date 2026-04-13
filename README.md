@@ -24,6 +24,6 @@ curl -sSL https://raw.githubusercontent.com/zhengdechang/install-software/main/i
 - install cc
 
 ```
-curl -sSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-cc.sh
+curl -sSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-cc.sh | bash
 ```
 
