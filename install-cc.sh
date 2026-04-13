@@ -132,6 +132,45 @@ install_nvm_node() {
 }
 
 # ============================================================
+# 写入 ~/.claude/settings.json（daemon 读取环境变量的来源）
+# ============================================================
+write_claude_settings() {
+    local api_key="$1"
+    local base_url="$2"
+
+    mkdir -p "$HOME/.claude"
+
+    CLAUDE_API_KEY="$api_key" CLAUDE_BASE_URL="$base_url" python3 - <<'PYEOF'
+import json, os
+
+settings_path = os.path.expanduser('~/.claude/settings.json')
+api_key  = os.environ.get('CLAUDE_API_KEY', '')
+base_url = os.environ.get('CLAUDE_BASE_URL', '')
+
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+env = settings.setdefault('env', {})
+env.pop('ANTHROPIC_API_KEY', None)          # 移除旧格式
+env['ANTHROPIC_AUTH_TOKEN'] = api_key        # daemon/sdk 统一用 Bearer token
+env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
+env['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
+if base_url:
+    env['ANTHROPIC_BASE_URL'] = base_url
+else:
+    env.pop('ANTHROPIC_BASE_URL', None)
+
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+PYEOF
+    ok "API Key 已写入 $HOME/.claude/settings.json"
+}
+
+# ============================================================
 # Claude Code
 # ============================================================
 install_claude_code() {
@@ -183,6 +222,16 @@ install_claude_code() {
     [ -n "$ANTHROPIC_BASE_URL_INPUT" ] \
         && ok "Base URL: $ANTHROPIC_BASE_URL_INPUT" \
         || info "Base URL: 使用官方默认"
+
+    # 同步写入 ~/.claude/settings.json，供 daemon 读取
+    write_claude_settings "$ANTHROPIC_API_KEY_INPUT" "$ANTHROPIC_BASE_URL_INPUT"
+
+    # 若 cc-connect daemon 已在运行，自动重启以加载新配置
+    if has cc-connect && cc-connect daemon status 2>&1 | grep -q "Running"; then
+        info "检测到 cc-connect 正在运行，重启以加载新配置..."
+        cc-connect daemon restart
+        ok "cc-connect 已重启"
+    fi
 }
 
 # ============================================================
@@ -474,6 +523,67 @@ prompt_credentials() {
 }
 
 # ============================================================
+# 重启服务
+# ============================================================
+restart_cc_connect() {
+    header "重启 cc-connect"
+    load_nvm
+    if ! has cc-connect; then
+        err "cc-connect 未安装，请先选择安装"
+        return 1
+    fi
+    info "重启 cc-connect daemon..."
+    cc-connect daemon restart
+    sleep 2
+    echo
+    cc-connect daemon status
+    ok "cc-connect 重启完成"
+}
+
+restart_gstack_browserd() {
+    header "重启 gstack browserd"
+    local gstack_dir="$HOME/.claude/skills/gstack"
+    if [ ! -d "$gstack_dir" ]; then
+        err "gstack 未安装，请先选择安装"
+        return 1
+    fi
+    info "停止 gstack browserd 进程..."
+    pkill -f "browserd" 2>/dev/null && ok "browserd 已停止" || info "browserd 当前未运行"
+    sleep 1
+    info "启动 gstack browserd..."
+    cd "$gstack_dir"
+    if [ -f "./browserd" ]; then
+        ./browserd &>/dev/null &
+        sleep 2
+        pgrep -f browserd &>/dev/null \
+            && ok "gstack browserd 已启动 (PID: $(pgrep -f browserd | head -1))" \
+            || warn "browserd 未检测到运行中进程（部分版本按需启动，属正常现象）"
+    else
+        warn "未找到 browserd 可执行文件，gstack 将在下次调用时自动启动"
+    fi
+    cd - >/dev/null
+}
+
+restart_menu() {
+    while true; do
+        echo
+        echo -e "${BOLD}  重启服务:${NC}"
+        echo
+        echo -e "  ${CYAN}1)${NC}  cc-connect      (飞书 AI 机器人)"
+        divider
+        echo -e "  ${RED}0)${NC}  返回主菜单"
+        echo
+        read -rp "  请输入选项 [0-1]: " RESTART_CHOICE
+
+        case "$RESTART_CHOICE" in
+            1) restart_cc_connect ;;
+            0) return 0 ;;
+            *) err "无效选项: $RESTART_CHOICE" ;;
+        esac
+    done
+}
+
+# ============================================================
 # Banner & 菜单
 # ============================================================
 banner() {
@@ -500,9 +610,11 @@ menu() {
     echo -e "  ${CYAN}5)${NC}  gstack  (AI 工程师工作流, 37 个 skills)"
     echo -e "  ${CYAN}6)${NC}  cc-connect beta  (飞书机器人桥接服务)"
     divider
+    echo -e "  ${YELLOW}7)${NC}  重启服务"
+    divider
     echo -e "  ${RED}0)${NC}  退出"
     echo
-    read -rp "  请输入选项 [0-6]: " CHOICE
+    read -rp "  请输入选项 [0-7]: " CHOICE
 }
 
 # ============================================================
@@ -539,6 +651,7 @@ main() {
         4) prompt_credentials; install_feishu_cli ;;
         5) install_gstack ;;
         6) install_cc_connect ;;
+        7) restart_menu ;;
         0) echo "退出。"; exit 0 ;;
         *) err "无效选项: $CHOICE"; exit 1 ;;
     esac
