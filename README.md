@@ -27,3 +27,8 @@ curl -sSL https://raw.githubusercontent.com/zhengdechang/install-software/main/i
 curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-cc.sh -o /tmp/install-cc.sh && bash /tmp/install-cc.sh
 ```
 
+- install Hermes Agent (with Feishu/Lark setup, optional WeCom)
+
+```
+curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-hermes.sh -o /tmp/install-hermes.sh && bash /tmp/install-hermes.sh
+```
