@@ -28,6 +28,14 @@ divider() { echo -e "${BLUE}─────────────────�
 
 has() { command -v "$1" &>/dev/null; }
 
+ensure_valid_cwd() {
+    # Some remote shells keep a stale/deleted cwd, which breaks git/apt/curl commands.
+    if ! pwd >/dev/null 2>&1; then
+        warn "当前工作目录已失效，自动切换到 $HOME"
+        cd "$HOME" 2>/dev/null || cd /
+    fi
+}
+
 # ============================================================
 # OS 检测
 # ============================================================
@@ -109,6 +117,21 @@ load_nvm() {
 
 load_bun() {
     export PATH="$HOME/.bun/bin:$PATH"
+}
+
+persist_bun_path() {
+    touch "$SHELL_RC"
+    if ! grep -Fq 'export PATH="$HOME/.bun/bin:$PATH"' "$SHELL_RC"; then
+        echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$SHELL_RC"
+    fi
+}
+
+cpu_has_avx() {
+    # Only meaningful on Linux; other OS treat as supported.
+    if [ "$OS_TYPE" != "linux" ]; then
+        return 0
+    fi
+    grep -m1 -i '^flags' /proc/cpuinfo 2>/dev/null | grep -qw 'avx'
 }
 
 install_nvm_node() {
@@ -284,7 +307,12 @@ install_feishu_cli() {
 # ============================================================
 install_bun() {
     load_bun
+    if [ ! -x "$(command -v bun 2>/dev/null)" ] && [ -x "$HOME/.bun/bin/bun" ]; then
+        load_bun
+    fi
+
     if has bun; then
+        persist_bun_path
         warn "bun 已安装: v$(bun --version)"
         return 0
     fi
@@ -299,7 +327,119 @@ install_bun() {
     info "安装 bun..."
     curl -fsSL https://bun.sh/install | bash
     load_bun
+    if ! has bun; then
+        err "bun 安装后仍不可用，请检查 ~/.bun/bin/bun 是否存在"
+        return 1
+    fi
+    persist_bun_path
     ok "bun v$(bun --version) 安装完成"
+    info "已将 bun PATH 写入 $SHELL_RC（新终端自动生效）"
+}
+
+patch_gstack_for_non_avx() {
+    local gstack_dir="$1"
+    local build_fix_marker=0
+    local non_avx_marker=0
+    local setup_node_fallback_marker=0
+
+    if [ ! -d "$gstack_dir" ]; then
+        return 1
+    fi
+
+    # Fix Bun build regression: server build may output extra assets, so outfile breaks.
+    build_fix_marker="$(python3 - "$gstack_dir" <<'PYEOF'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+changed = False
+
+build_node = root / "browse" / "scripts" / "build-node-server.sh"
+if build_node.exists():
+    text = build_node.read_text(encoding="utf-8")
+    old = '--outfile "$DIST_DIR/server-node.mjs"'
+    new = '--outdir "$DIST_DIR" \\\n  --entry-naming "server-node.mjs"'
+    if old in text and '--outdir "$DIST_DIR"' not in text:
+        build_node.write_text(text.replace(old, new, 1), encoding="utf-8")
+        changed = True
+
+print("1" if changed else "0")
+PYEOF
+)"
+
+    # Non-AVX machines: avoid bun run gen:skill-docs during build (known Bun crash).
+    if ! cpu_has_avx; then
+        non_avx_marker="$(python3 - "$gstack_dir" <<'PYEOF'
+import json, re, sys
+from pathlib import Path
+
+pkg = Path(sys.argv[1]) / "package.json"
+if not pkg.exists():
+    print("0")
+    raise SystemExit(0)
+
+data = json.loads(pkg.read_text(encoding="utf-8"))
+scripts = data.get("scripts", {})
+build = scripts.get("build")
+if not isinstance(build, str):
+    print("0")
+    raise SystemExit(0)
+
+if "bun run gen:skill-docs --host all" not in build:
+    print("0")
+    raise SystemExit(0)
+
+build = re.sub(r"\bbun run gen:skill-docs --host all;?\s*", "", build, count=1)
+scripts["build"] = build
+data["scripts"] = scripts
+pkg.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("1")
+PYEOF
+)"
+        if [ "$non_avx_marker" = "1" ]; then
+            warn "检测到 CPU 无 AVX：已跳过 gstack build 里的 gen:skill-docs（避免 Bun 崩溃）"
+        fi
+    fi
+
+    if [ "$build_fix_marker" = "1" ]; then
+        info "已修复 gstack Node server 打包参数（兼容 Bun 多产物输出）"
+    fi
+
+    # Some Linux servers fail to launch Playwright via Bun runtime.
+    # Patch setup to try Node first, then fallback to Bun.
+    setup_node_fallback_marker="$(python3 - "$gstack_dir" <<'PYEOF'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+setup = root / "setup"
+if not setup.exists():
+    print("0")
+    raise SystemExit(0)
+
+text = setup.read_text(encoding="utf-8")
+old = "      bun --eval 'import { chromium } from \"playwright\"; const browser = await chromium.launch(); await browser.close();'"
+
+if old not in text or "node -e \"const { chromium } = require('playwright')" in text:
+    print("0")
+    raise SystemExit(0)
+
+new = """      if command -v node >/dev/null 2>&1; then
+        node -e "const { chromium } = require('playwright'); (async () => { const b = await chromium.launch(); await b.close(); })()" 2>/dev/null \\
+          || bun --eval 'import { chromium } from "playwright"; const browser = await chromium.launch(); await browser.close();'
+      else
+        bun --eval 'import { chromium } from "playwright"; const browser = await chromium.launch(); await browser.close();'
+      fi"""
+
+setup.write_text(text.replace(old, new, 1), encoding="utf-8")
+print("1")
+PYEOF
+)"
+    if [ "$setup_node_fallback_marker" = "1" ]; then
+        info "已为 gstack setup 注入 Node 回退逻辑（Playwright 启动更稳定）"
+    fi
+
+    return 0
 }
 
 # ============================================================
@@ -307,37 +447,82 @@ install_bun() {
 # ============================================================
 install_gstack() {
     header "gstack (AI 工程工作流)"
+    local gstack_dir="$HOME/.claude/skills/gstack"
+    ensure_valid_cwd
     load_nvm
-    install_bun
+    install_bun || return 1
 
-    if [ -d "$HOME/.claude/skills/gstack" ]; then
+    # If current shell is inside gstack dir, deleting it will invalidate $PWD.
+    # Move to a safe directory first.
+    if [ -d "$gstack_dir" ]; then
+        case "$PWD" in
+            "$gstack_dir"|"$gstack_dir"/*)
+                warn "当前目录位于 gstack 安装目录内，先切换到 $HOME"
+                cd "$HOME" || cd /
+                ;;
+        esac
+    fi
+
+    if [ -d "$gstack_dir" ]; then
         warn "gstack 已安装"
         read -rp "  重新安装/更新? [y/N] " yn
         if [[ "$yn" == [yY] ]]; then
-            rm -rf "$HOME/.claude/skills/gstack"
+            rm -rf "$gstack_dir"
+            # Ensure cwd is still valid even if shell started from removed directory.
+            pwd >/dev/null 2>&1 || cd "$HOME" || cd /
         else
             return 0
         fi
     fi
 
-    info "安装 Playwright Chromium..."
+    info "检查系统依赖..."
     if [ "$OS_TYPE" = "linux" ]; then
-        # Linux 需要先安装系统依赖
-        pkg_update
-        bun x playwright install-deps chromium
+        # Linux 需要 apt 元数据，后续 playwright install-deps 会用到
+        pkg_update || {
+            err "apt 更新失败，无法安装 Playwright 依赖"
+            return 1
+        }
     fi
-    # macOS 不需要 install-deps
-    bun x playwright install chromium
 
     info "克隆 gstack..."
+    ensure_valid_cwd
     git clone --single-branch --depth 1 \
         https://github.com/garrytan/gstack.git \
-        "$HOME/.claude/skills/gstack"
+        "$gstack_dir" || {
+            err "gstack 克隆失败"
+            return 1
+        }
+
+    info "应用 gstack 兼容补丁..."
+    patch_gstack_for_non_avx "$gstack_dir" || warn "兼容补丁应用失败，将继续尝试 setup"
+
+    if [ "$OS_TYPE" = "linux" ]; then
+        info "安装 Playwright Linux 运行时依赖..."
+        (
+            cd "$gstack_dir" && \
+            (bunx playwright install-deps chromium || (command -v npx >/dev/null 2>&1 && npx -y playwright install-deps chromium))
+        ) || {
+            err "Playwright Linux 依赖安装失败（请检查 sudo 权限和 apt 源）"
+            return 1
+        }
+    fi
+
+    info "安装 Playwright Chromium..."
+    (
+        cd "$gstack_dir" && \
+        (bunx playwright install chromium || (command -v npx >/dev/null 2>&1 && npx -y playwright install chromium))
+    ) || warn "Playwright Chromium 预安装失败，setup 将继续重试"
 
     info "运行 gstack setup..."
-    cd "$HOME/.claude/skills/gstack"
-    ./setup
-    cd - >/dev/null
+    (
+        cd "$gstack_dir" && PATH="$HOME/.bun/bin:$PATH" ./setup --host claude
+    )
+    local setup_rc=$?
+    if [ "$setup_rc" -ne 0 ]; then
+        err "gstack setup 失败（退出码: $setup_rc）"
+        warn "可手动重试: export PATH=\"$HOME/.bun/bin:\$PATH\" && cd ~/.claude/skills/gstack && ./setup --host claude"
+        return 1
+    fi
 
     ok "gstack 安装完成 (37 个 skills)"
 }
@@ -622,18 +807,21 @@ menu() {
 # ============================================================
 main() {
     detect_os
+    ensure_valid_cwd
     banner
     menu
 
     case "$CHOICE" in
         1)
-            [ "$OS_TYPE" = "macos" ] && ensure_brew
+            if [ "$OS_TYPE" = "macos" ]; then
+                ensure_brew || return 1
+            fi
             prompt_credentials
-            install_nvm_node
-            install_claude_code
-            install_feishu_cli
-            install_gstack
-            install_cc_connect
+            install_nvm_node || return 1
+            install_claude_code || return 1
+            install_feishu_cli || return 1
+            install_gstack || return 1
+            install_cc_connect || return 1
             echo
             echo -e "${BOLD}${GREEN}"
             echo "  ╔══════════════════════════════════════════════╗"
@@ -646,11 +834,11 @@ main() {
             echo "    3. 查看机器人状态:  cc-connect daemon status"
             echo "    4. 查看机器人日志:  cc-connect daemon logs -f"
             ;;
-        2) install_nvm_node ;;
-        3) install_claude_code ;;
-        4) prompt_credentials; install_feishu_cli ;;
-        5) install_gstack ;;
-        6) install_cc_connect ;;
+        2) install_nvm_node || return 1 ;;
+        3) install_claude_code || return 1 ;;
+        4) prompt_credentials; install_feishu_cli || return 1 ;;
+        5) install_gstack || return 1 ;;
+        6) install_cc_connect || return 1 ;;
         7) restart_menu ;;
         0) echo "退出。"; exit 0 ;;
         *) err "无效选项: $CHOICE"; exit 1 ;;
