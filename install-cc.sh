@@ -87,6 +87,56 @@ is_cc_connect_installed() {
     has cc-connect && [ -f "$HOME/.cc-connect/config.toml" ]
 }
 
+load_existing_claude_config() {
+    # Reuse existing Claude config from ~/.claude/settings.json if current inputs are empty.
+    local current_key="${ANTHROPIC_API_KEY_INPUT:-}"
+    local current_base="${ANTHROPIC_BASE_URL_INPUT:-}"
+    local out
+
+    out="$(CURRENT_KEY="$current_key" CURRENT_BASE="$current_base" python3 - <<'PYEOF'
+import json, os, sys
+path = os.path.expanduser("~/.claude/settings.json")
+cur_key = os.environ.get("CURRENT_KEY", "")
+cur_base = os.environ.get("CURRENT_BASE", "")
+
+if not os.path.exists(path):
+    print(f"{cur_key}\n{cur_base}")
+    raise SystemExit(0)
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    print(f"{cur_key}\n{cur_base}")
+    raise SystemExit(0)
+
+env = (data or {}).get("env") or {}
+key = cur_key or (env.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+base = cur_base or (env.get("ANTHROPIC_BASE_URL") or "").strip()
+print(key)
+print(base)
+PYEOF
+)"
+
+    ANTHROPIC_API_KEY_INPUT="$(echo "$out" | sed -n '1p')"
+    ANTHROPIC_BASE_URL_INPUT="$(echo "$out" | sed -n '2p')"
+}
+
+load_existing_feishu_config() {
+    # Reuse existing Feishu app_id/app_secret from ~/.cc-connect/config.toml if missing.
+    [ -z "${APP_ID:-}" ] || [ -z "${APP_SECRET:-}" ] || return 0
+
+    local cfg="$HOME/.cc-connect/config.toml"
+    [ -f "$cfg" ] || return 0
+
+    if [ -z "${APP_ID:-}" ]; then
+        APP_ID="$(sed -n 's/^[[:space:]]*app_id[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$cfg" | head -n 1)"
+    fi
+    if [ -z "${APP_SECRET:-}" ]; then
+        APP_SECRET="$(sed -n 's/^[[:space:]]*app_secret[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$cfg" | head -n 1)"
+    fi
+}
+
 # ============================================================
 # OS 检测
 # ============================================================
@@ -256,6 +306,7 @@ PYEOF
 install_claude_code() {
     header "Claude Code"
     load_nvm
+    load_existing_claude_config
 
     if has claude; then
         warn "Claude Code 已安装: $(claude --version 2>&1 | head -1 || echo '未知版本')"
@@ -266,8 +317,8 @@ install_claude_code() {
     fi
 
     # 已有配置且本次未显式传入新 key，跳过重复配置
-    if [ -z "$ANTHROPIC_API_KEY_INPUT" ] && has_claude_auth_config; then
-        info "检测到 Claude API 已配置，跳过重复写入"
+    if [ -n "$ANTHROPIC_API_KEY_INPUT" ] && has_claude_auth_config; then
+        info "检测到 Claude API 已配置，复用已有配置"
         return 0
     fi
 
@@ -342,6 +393,7 @@ ensure_brew() {
 install_feishu_cli() {
     header "飞书 CLI + Lark Skills"
     load_nvm
+    load_existing_feishu_config
 
     if has lark-cli; then
         warn "飞书 CLI 已安装，跳过安装步骤"
@@ -360,6 +412,7 @@ install_feishu_cli() {
     fi
 
     if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+        info "复用已有飞书配置 (App ID: $APP_ID)"
         info "配置 lark-cli (App ID: $APP_ID)..."
         echo "$APP_SECRET" | lark-cli config init --app-id "$APP_ID" --app-secret-stdin
         ok "lark-cli 配置完成"
@@ -602,6 +655,7 @@ install_gstack() {
 install_cc_connect() {
     header "cc-connect (飞书 AI 机器人)"
     load_nvm
+    load_existing_feishu_config
 
     if is_cc_connect_installed; then
         warn "cc-connect 已安装，跳过"
@@ -757,12 +811,23 @@ TOML
 # 凭据输入
 # ============================================================
 prompt_credentials() {
+    load_existing_claude_config
+    load_existing_feishu_config
+
     echo
     echo -e "${BOLD}  Claude API 配置${NC}"
     divider
-    read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
-    echo
-    read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+    if [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
+        read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
+        echo
+    else
+        info "复用已有 Claude API Key 配置"
+    fi
+    if [ -z "$ANTHROPIC_BASE_URL_INPUT" ]; then
+        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+    else
+        info "复用已有 Claude Base URL: $ANTHROPIC_BASE_URL_INPUT"
+    fi
     divider
     [ -z "$ANTHROPIC_API_KEY_INPUT" ] \
         && warn "未输入 API Key，Claude Code 配置将跳过" \
@@ -771,9 +836,17 @@ prompt_credentials() {
     echo
     echo -e "${BOLD}  飞书应用凭据 (用于 lark-cli 和 cc-connect)${NC}"
     divider
-    read -rp "  App ID    : " APP_ID
-    read -rsp "  App Secret: " APP_SECRET
-    echo
+    if [ -z "$APP_ID" ]; then
+        read -rp "  App ID    : " APP_ID
+    else
+        info "复用已有 App ID: $APP_ID"
+    fi
+    if [ -z "$APP_SECRET" ]; then
+        read -rsp "  App Secret: " APP_SECRET
+        echo
+    else
+        info "复用已有 App Secret 配置"
+    fi
     divider
     { [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; } \
         && warn "未输入飞书凭据，相关配置步骤将跳过" \
