@@ -685,6 +685,15 @@ install_cc_connect() {
     BRIDGE_TOKEN=$(openssl rand -hex 16)
     MGMT_TOKEN=$(openssl rand -hex 32)
 
+    local work_dir="${HOME:-}"
+    if [ -z "$work_dir" ]; then
+        work_dir="$(eval echo "~$(id -un)")"
+    fi
+    if [ -z "$work_dir" ] || [ "$work_dir" = "~$(id -un)" ]; then
+        err "无法自动获取当前用户主目录，退出"
+        return 1
+    fi
+
     info "写入配置 ~/.cc-connect/config.toml..."
     mkdir -p "$HOME/.cc-connect"
     cat > "$HOME/.cc-connect/config.toml" <<TOML
@@ -694,14 +703,16 @@ language = "en"
 
 [[projects]]
   name = "default"
+  show_context_indicator = true
+  quiet = false
 
   [projects.agent]
     type = "claudecode"
 
     [projects.agent.options]
-      mode = "default"
+      mode = "bypassPermissions"
       model = "sonnet"
-      work_dir = ""
+      work_dir = "$work_dir"
 
   [[projects.platforms]]
     type = "feishu"
