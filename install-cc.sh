@@ -28,12 +28,63 @@ divider() { echo -e "${BLUE}─────────────────�
 
 has() { command -v "$1" &>/dev/null; }
 
+ensure_run_as_non_root_user() {
+    if [ "$(id -u)" -ne 0 ]; then
+        return 0
+    fi
+
+    # 如果是通过 sudo 提权进来的，自动切回原始用户执行，避免装到 root 家目录
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        local script_path
+        script_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+        if [ -f "$script_path" ]; then
+            warn "检测到当前为 root，自动切换到用户 $SUDO_USER 执行安装"
+            exec sudo -u "$SUDO_USER" -H bash "$script_path" "$@"
+        fi
+        err "当前以 root 运行，且脚本来源不可重入（可能是 curl | bash）"
+        err "请切换到普通用户后重新执行脚本"
+        exit 1
+    fi
+
+    err "请使用普通用户执行安装脚本（不要直接用 root）"
+    exit 1
+}
+
 ensure_valid_cwd() {
     # Some remote shells keep a stale/deleted cwd, which breaks git/apt/curl commands.
     if ! pwd >/dev/null 2>&1; then
         warn "当前工作目录已失效，自动切换到 $HOME"
         cd "$HOME" 2>/dev/null || cd /
     fi
+}
+
+has_claude_auth_config() {
+    python3 - <<'PYEOF'
+import json, os, sys
+path = os.path.expanduser("~/.claude/settings.json")
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+token = (((data or {}).get("env") or {}).get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+sys.exit(0 if token else 1)
+PYEOF
+}
+
+has_lark_skills_installed() {
+    [ -f "$HOME/.claude/skills/lark-base/SKILL.md" ] || \
+    [ -L "$HOME/.claude/skills/lark-base" ] || \
+    [ -d "$HOME/.claude/skills/lark-base" ]
+}
+
+is_gstack_installed() {
+    [ -x "$HOME/.claude/skills/gstack/setup" ] && \
+    [ -x "$HOME/.claude/skills/gstack/browse/dist/browse" ]
+}
+
+is_cc_connect_installed() {
+    has cc-connect && [ -f "$HOME/.cc-connect/config.toml" ]
 }
 
 # ============================================================
@@ -138,6 +189,12 @@ install_nvm_node() {
     header "NVM + Node.js 24"
     load_nvm
 
+    # 已安装且主版本已满足，直接跳过
+    if has nvm && has node && node -v 2>/dev/null | grep -qE '^v24\.'; then
+        warn "NVM + Node.js 24 已安装，跳过"
+        return 0
+    fi
+
     if has nvm; then
         warn "NVM 已安装，检查 Node.js 版本..."
     else
@@ -202,12 +259,16 @@ install_claude_code() {
 
     if has claude; then
         warn "Claude Code 已安装: $(claude --version 2>&1 | head -1 || echo '未知版本')"
-        read -rp "  重新安装? [y/N] " yn
-        [[ "$yn" == [yY] ]] && npm install -g @anthropic-ai/claude-code
     else
         info "安装 @anthropic-ai/claude-code..."
         npm install -g @anthropic-ai/claude-code
         ok "Claude Code 安装完成"
+    fi
+
+    # 已有配置且本次未显式传入新 key，跳过重复配置
+    if [ -z "$ANTHROPIC_API_KEY_INPUT" ] && has_claude_auth_config; then
+        info "检测到 Claude API 已配置，跳过重复写入"
+        return 0
     fi
 
     # 配置 API Key 和 Base URL
@@ -282,13 +343,21 @@ install_feishu_cli() {
     header "飞书 CLI + Lark Skills"
     load_nvm
 
-    info "安装 @larksuite/cli..."
-    npm install -g @larksuite/cli
-    ok "飞书 CLI 安装完成"
+    if has lark-cli; then
+        warn "飞书 CLI 已安装，跳过安装步骤"
+    else
+        info "安装 @larksuite/cli..."
+        npm install -g @larksuite/cli
+        ok "飞书 CLI 安装完成"
+    fi
 
-    info "安装 Lark Skills (23 个)..."
-    npx skills add https://github.com/larksuite/cli -y -g
-    ok "Lark Skills 安装完成"
+    if has_lark_skills_installed; then
+        warn "Lark Skills 已安装，跳过安装步骤"
+    else
+        info "安装 Lark Skills (23 个)..."
+        npx skills add https://github.com/larksuite/cli -y -g
+        ok "Lark Skills 安装完成"
+    fi
 
     if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
         info "配置 lark-cli (App ID: $APP_ID)..."
@@ -452,6 +521,11 @@ install_gstack() {
     load_nvm
     install_bun || return 1
 
+    if is_gstack_installed; then
+        warn "gstack 已安装，跳过"
+        return 0
+    fi
+
     # If current shell is inside gstack dir, deleting it will invalidate $PWD.
     # Move to a safe directory first.
     if [ -d "$gstack_dir" ]; then
@@ -464,15 +538,10 @@ install_gstack() {
     fi
 
     if [ -d "$gstack_dir" ]; then
-        warn "gstack 已安装"
-        read -rp "  重新安装/更新? [y/N] " yn
-        if [[ "$yn" == [yY] ]]; then
-            rm -rf "$gstack_dir"
-            # Ensure cwd is still valid even if shell started from removed directory.
-            pwd >/dev/null 2>&1 || cd "$HOME" || cd /
-        else
-            return 0
-        fi
+        warn "检测到旧的 gstack 目录，但安装不完整，自动清理后重装"
+        rm -rf "$gstack_dir"
+        # Ensure cwd is still valid even if shell started from removed directory.
+        pwd >/dev/null 2>&1 || cd "$HOME" || cd /
     fi
 
     info "检查系统依赖..."
@@ -533,6 +602,12 @@ install_gstack() {
 install_cc_connect() {
     header "cc-connect (飞书 AI 机器人)"
     load_nvm
+
+    if is_cc_connect_installed; then
+        warn "cc-connect 已安装，跳过"
+        cc-connect daemon status 2>/dev/null || true
+        return 0
+    fi
 
     # 若未在"全部安装"流程中输入，则单独询问
     if [ -z "$APP_ID" ]; then
@@ -806,6 +881,7 @@ menu() {
 # 主入口
 # ============================================================
 main() {
+    ensure_run_as_non_root_user "$@"
     detect_os
     ensure_valid_cwd
     banner
@@ -816,7 +892,6 @@ main() {
             if [ "$OS_TYPE" = "macos" ]; then
                 ensure_brew || return 1
             fi
-            prompt_credentials
             install_nvm_node || return 1
             install_claude_code || return 1
             install_feishu_cli || return 1
