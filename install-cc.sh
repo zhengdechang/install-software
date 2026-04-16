@@ -283,6 +283,8 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
+settings['model'] = 'claude-opus-4.6'
+
 env = settings.setdefault('env', {})
 env.pop('ANTHROPIC_API_KEY', None)          # 移除旧格式
 env['ANTHROPIC_AUTH_TOKEN'] = api_key        # daemon/sdk 统一用 Bearer token
@@ -298,6 +300,29 @@ with open(settings_path, 'w') as f:
     f.write('\n')
 PYEOF
     ok "API Key 已写入 $HOME/.claude/settings.json"
+}
+
+set_claude_settings_model_opus_46() {
+    mkdir -p "$HOME/.claude"
+
+    python3 - <<'PYEOF'
+import json
+import os
+
+settings_path = os.path.expanduser('~/.claude/settings.json')
+
+try:
+    with open(settings_path, 'r', encoding='utf-8') as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+settings['model'] = 'claude-opus-4.6'
+
+with open(settings_path, 'w', encoding='utf-8') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+PYEOF
 }
 
 # ============================================================
@@ -652,6 +677,62 @@ install_gstack() {
 # ============================================================
 # cc-connect
 # ============================================================
+set_cc_connect_agent_model_opus() {
+    local cfg="$HOME/.cc-connect/config.toml"
+    [ -f "$cfg" ] || return 1
+
+    python3 - "$cfg" <<'PYEOF'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines()
+
+inside = False
+changed = False
+for idx, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped == "[projects.agent.options]":
+        inside = True
+        continue
+    if inside and stripped.startswith("["):
+        inside = False
+    if inside and re.match(r"^\s*model\s*=", line):
+        indent = re.match(r"^(\s*)", line).group(1)
+        lines[idx] = f'{indent}model = "opus"'
+        changed = True
+        break
+
+if not changed:
+    sys.exit(1)
+
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PYEOF
+}
+
+refresh_cc_connect_daemon() {
+    info "配置后台服务..."
+    if cc-connect daemon status 2>&1 | grep -qE "Running|Stopped|Installed"; then
+        cc-connect daemon uninstall 2>/dev/null || true
+    fi
+    cc-connect daemon install --work-dir "$HOME/.cc-connect"
+
+    # Linux 额外配置 linger（开机无需登录即自启）
+    if [ "$OS_TYPE" = "linux" ]; then
+        info "配置开机自启 (loginctl linger)..."
+        sudo loginctl enable-linger "$USER"
+        ok "开机自启已配置 (systemd linger)"
+    else
+        ok "开机自启已配置 (launchd)"
+    fi
+
+    sleep 2
+    echo
+    cc-connect daemon status
+}
+
 install_cc_connect() {
     header "cc-connect (飞书 AI 机器人)"
     load_nvm
@@ -711,7 +792,7 @@ language = "en"
 
     [projects.agent.options]
       mode = "bypassPermissions"
-      model = "sonnet"
+      model = "opus"
       work_dir = "$work_dir"
 
   [[projects.platforms]]
@@ -797,25 +878,32 @@ TOML
     info "Bridge token:     $BRIDGE_TOKEN"
     info "Management token: $MGMT_TOKEN"
 
-    # 安装或重启 daemon
-    info "配置后台服务..."
-    if cc-connect daemon status 2>&1 | grep -qE "Running|Stopped|Installed"; then
-        cc-connect daemon uninstall 2>/dev/null || true
-    fi
-    cc-connect daemon install --work-dir "$HOME/.cc-connect"
+    refresh_cc_connect_daemon
+}
 
-    # Linux 额外配置 linger（开机无需登录即自启）
-    if [ "$OS_TYPE" = "linux" ]; then
-        info "配置开机自启 (loginctl linger)..."
-        sudo loginctl enable-linger "$USER"
-        ok "开机自启已配置 (systemd linger)"
+update_cc_connect_beta() {
+    header "更新 cc-connect"
+    load_nvm
+
+    if ! has cc-connect; then
+        err "cc-connect 未安装，请先选择安装"
+        return 1
+    fi
+
+    info "更新 cc-connect..."
+    npm install -g cc-connect@beta
+    ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 更新完成"
+    set_claude_settings_model_opus_46
+
+    if [ -f "$HOME/.cc-connect/config.toml" ]; then
+        if ! set_cc_connect_agent_model_opus; then
+            warn "未能更新 ~/.cc-connect/config.toml，请手动检查"
+        fi
+        refresh_cc_connect_daemon
     else
-        ok "开机自启已配置 (launchd)"
+        warn "未找到 ~/.cc-connect/config.toml，仅完成 cc-connect 更新"
+        warn "如需生成配置，请先执行安装菜单"
     fi
-
-    sleep 2
-    echo
-    cc-connect daemon status
 }
 
 # ============================================================
@@ -954,11 +1042,12 @@ menu() {
     echo -e "  ${CYAN}5)${NC}  gstack  (AI 工程师工作流, 37 个 skills)"
     echo -e "  ${CYAN}6)${NC}  cc-connect beta  (飞书机器人桥接服务)"
     divider
-    echo -e "  ${YELLOW}7)${NC}  重启服务"
+    echo -e "  ${YELLOW}7)${NC}  更新 cc-connect"
+    echo -e "  ${YELLOW}8)${NC}  重启服务"
     divider
     echo -e "  ${RED}0)${NC}  退出"
     echo
-    read -rp "  请输入选项 [0-7]: " CHOICE
+    read -rp "  请输入选项 [0-8]: " CHOICE
 }
 
 # ============================================================
@@ -998,7 +1087,8 @@ main() {
         4) prompt_credentials; install_feishu_cli || return 1 ;;
         5) install_gstack || return 1 ;;
         6) install_cc_connect || return 1 ;;
-        7) restart_menu ;;
+        7) update_cc_connect_beta || return 1 ;;
+        8) restart_menu ;;
         0) echo "退出。"; exit 0 ;;
         *) err "无效选项: $CHOICE"; exit 1 ;;
     esac
