@@ -317,7 +317,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
-settings['model'] = 'claude-opus-4.6'
+settings['model'] = 'opus'
 
 with open(settings_path, 'w', encoding='utf-8') as f:
     json.dump(settings, f, indent=2)
