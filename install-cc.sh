@@ -283,7 +283,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
-settings['model'] = 'claude-opus-4.6'
+settings['model'] = 'opus'
 
 env = settings.setdefault('env', {})
 env.pop('ANTHROPIC_API_KEY', None)          # 移除旧格式
