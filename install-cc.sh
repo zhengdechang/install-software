@@ -325,6 +325,32 @@ with open(settings_path, 'w', encoding='utf-8') as f:
 PYEOF
 }
 
+set_claude_settings_model_opus_47() {
+    header "Claude模型更新4.7"
+    mkdir -p "$HOME/.claude"
+
+    python3 - <<'PYEOF'
+import json
+import os
+
+settings_path = os.path.expanduser('~/.claude/settings.json')
+
+try:
+    with open(settings_path, 'r', encoding='utf-8') as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+settings['model'] = 'claude-opus-4-7'
+
+with open(settings_path, 'w', encoding='utf-8') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+PYEOF
+
+    ok "已更新 $HOME/.claude/settings.json: model = claude-opus-4-7"
+}
+
 # ============================================================
 # Claude Code
 # ============================================================
@@ -677,7 +703,7 @@ install_gstack() {
 # ============================================================
 # cc-connect
 # ============================================================
-set_cc_connect_agent_model_opus() {
+set_cc_connect_agent_model_opus_47() {
     local cfg="$HOME/.cc-connect/config.toml"
     [ -f "$cfg" ] || return 1
 
@@ -701,7 +727,7 @@ for idx, line in enumerate(lines):
         inside = False
     if inside and re.match(r"^\s*model\s*=", line):
         indent = re.match(r"^(\s*)", line).group(1)
-        lines[idx] = f'{indent}model = "opus"'
+        lines[idx] = f'{indent}model = "claude-opus-4-7"'
         changed = True
         break
 
@@ -792,7 +818,7 @@ language = "en"
 
     [projects.agent.options]
       mode = "bypassPermissions"
-      model = "opus"
+      model = "claude-opus-4-7"
       work_dir = "$work_dir"
 
   [[projects.platforms]]
@@ -893,10 +919,10 @@ update_cc_connect_beta() {
     info "更新 cc-connect..."
     npm install -g cc-connect@beta
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 更新完成"
-    set_claude_settings_model_opus_46
+    set_claude_settings_model_opus_47
 
     if [ -f "$HOME/.cc-connect/config.toml" ]; then
-        if ! set_cc_connect_agent_model_opus; then
+        if ! set_cc_connect_agent_model_opus_47; then
             warn "未能更新 ~/.cc-connect/config.toml，请手动检查"
         fi
         refresh_cc_connect_daemon
@@ -1044,10 +1070,11 @@ menu() {
     divider
     echo -e "  ${YELLOW}7)${NC}  更新 cc-connect"
     echo -e "  ${YELLOW}8)${NC}  重启服务"
+    echo -e "  ${YELLOW}9)${NC}  Claude模型更新4.7"
     divider
     echo -e "  ${RED}0)${NC}  退出"
     echo
-    read -rp "  请输入选项 [0-8]: " CHOICE
+    read -rp "  请输入选项 [0-9]: " CHOICE
 }
 
 # ============================================================
@@ -1089,6 +1116,23 @@ main() {
         6) install_cc_connect || return 1 ;;
         7) update_cc_connect_beta || return 1 ;;
         8) restart_menu ;;
+        9)
+            set_claude_settings_model_opus_47 || return 1
+            if [ -f "$HOME/.cc-connect/config.toml" ]; then
+                if set_cc_connect_agent_model_opus_47; then
+                    ok "已更新 ~/.cc-connect/config.toml: model = claude-opus-4-7"
+                    if has cc-connect; then
+                        refresh_cc_connect_daemon
+                    else
+                        warn "未检测到 cc-connect 命令，请手动重启服务"
+                    fi
+                else
+                    warn "未能更新 ~/.cc-connect/config.toml，请手动检查"
+                fi
+            else
+                warn "未找到 ~/.cc-connect/config.toml，仅更新 Claude settings"
+            fi
+            ;;
         0) echo "退出。"; exit 0 ;;
         *) err "无效选项: $CHOICE"; exit 1 ;;
     esac
