@@ -283,7 +283,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
-settings['model'] = 'opus'
+settings['model'] = 'claude-opus-4-7'
 
 env = settings.setdefault('env', {})
 env.pop('ANTHROPIC_API_KEY', None)          # 移除旧格式
@@ -784,8 +784,8 @@ install_cc_connect() {
         return 1
     fi
 
-    info "安装 cc-connect (beta)..."
-    npm install -g cc-connect@beta
+    info "安装 cc-connect..."
+    npm install -g cc-connect@latest
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 安装完成"
 
     # 生成随机 token
@@ -907,7 +907,7 @@ TOML
     refresh_cc_connect_daemon
 }
 
-update_cc_connect_beta() {
+update_cc_connect() {
     header "更新 cc-connect"
     load_nvm
 
@@ -917,7 +917,7 @@ update_cc_connect_beta() {
     fi
 
     info "更新 cc-connect..."
-    npm install -g cc-connect@beta
+    npm install -g cc-connect@latest
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 更新完成"
     set_claude_settings_model_opus_47
 
@@ -1066,7 +1066,7 @@ menu() {
     echo -e "  ${CYAN}3)${NC}  Claude Code  (含 API Key / Base URL 配置)"
     echo -e "  ${CYAN}4)${NC}  飞书 CLI + Lark Skills  (23 个)"
     echo -e "  ${CYAN}5)${NC}  gstack  (AI 工程师工作流, 37 个 skills)"
-    echo -e "  ${CYAN}6)${NC}  cc-connect beta  (飞书机器人桥接服务)"
+    echo -e "  ${CYAN}6)${NC}  cc-connect  (飞书机器人桥接服务)"
     divider
     echo -e "  ${YELLOW}7)${NC}  更新 cc-connect"
     echo -e "  ${YELLOW}8)${NC}  重启服务"
@@ -1114,7 +1114,7 @@ main() {
         4) prompt_credentials; install_feishu_cli || return 1 ;;
         5) install_gstack || return 1 ;;
         6) install_cc_connect || return 1 ;;
-        7) update_cc_connect_beta || return 1 ;;
+        7) update_cc_connect || return 1 ;;
         8) restart_menu ;;
         9)
             set_claude_settings_model_opus_47 || return 1
