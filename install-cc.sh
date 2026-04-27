@@ -87,6 +87,17 @@ is_cc_connect_installed() {
     has cc-connect && [ -f "$HOME/.cc-connect/config.toml" ]
 }
 
+confirm_reuse() {
+    # 询问是否复用已有配置；默认 y。返回 0=复用，1=重新输入。
+    local desc="$1"
+    local ans
+    read -rp "  复用已有${desc}? [Y/n]: " ans
+    case "${ans:-y}" in
+        [yY]|[yY][eE][sS]|"") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 load_existing_claude_config() {
     # Reuse existing Claude config from ~/.claude/settings.json if current inputs are empty.
     local current_key="${ANTHROPIC_API_KEY_INPUT:-}"
@@ -367,14 +378,23 @@ install_claude_code() {
         ok "Claude Code 安装完成"
     fi
 
-    # 已有配置且本次未显式传入新 key，跳过重复配置
+    # 已有配置时询问是否复用
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ] && has_claude_auth_config; then
-        info "检测到 Claude API 已配置，复用已有配置"
-        return 0
-    fi
-
-    # 配置 API Key 和 Base URL
-    if [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
+        echo
+        echo -e "${BOLD}  Claude API 配置${NC}"
+        divider
+        if confirm_reuse "Claude API 配置"; then
+            info "复用已有 Claude API 配置"
+            divider
+            return 0
+        fi
+        ANTHROPIC_API_KEY_INPUT=""
+        ANTHROPIC_BASE_URL_INPUT=""
+        read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
+        echo
+        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+        divider
+    elif [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
         echo
         echo -e "${BOLD}  Claude API 配置${NC}"
         divider
@@ -770,6 +790,15 @@ install_cc_connect() {
         return 0
     fi
 
+    # 已有凭据时询问是否复用
+    if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+        echo
+        if ! confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
+            APP_ID=""
+            APP_SECRET=""
+        fi
+    fi
+
     # 若未在"全部安装"流程中输入，则单独询问
     if [ -z "$APP_ID" ]; then
         read -rp "  飞书 App ID (例: cli_xxxxxxxxxxxxxxxx): " APP_ID
@@ -942,16 +971,26 @@ prompt_credentials() {
     echo
     echo -e "${BOLD}  Claude API 配置${NC}"
     divider
+    if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
+        if confirm_reuse "Claude API Key"; then
+            info "复用已有 Claude API Key 配置"
+        else
+            ANTHROPIC_API_KEY_INPUT=""
+        fi
+    fi
     if [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
         read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
         echo
-    else
-        info "复用已有 Claude API Key 配置"
     fi
-    if [ -z "$ANTHROPIC_BASE_URL_INPUT" ]; then
-        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+    if [ -n "$ANTHROPIC_BASE_URL_INPUT" ]; then
+        if confirm_reuse "Claude Base URL ($ANTHROPIC_BASE_URL_INPUT)"; then
+            info "复用已有 Claude Base URL: $ANTHROPIC_BASE_URL_INPUT"
+        else
+            ANTHROPIC_BASE_URL_INPUT=""
+            read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+        fi
     else
-        info "复用已有 Claude Base URL: $ANTHROPIC_BASE_URL_INPUT"
+        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
     fi
     divider
     [ -z "$ANTHROPIC_API_KEY_INPUT" ] \
@@ -961,16 +1000,21 @@ prompt_credentials() {
     echo
     echo -e "${BOLD}  飞书应用凭据 (用于 lark-cli 和 cc-connect)${NC}"
     divider
+    if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+        if confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
+            info "复用已有 App ID: $APP_ID"
+            info "复用已有 App Secret 配置"
+        else
+            APP_ID=""
+            APP_SECRET=""
+        fi
+    fi
     if [ -z "$APP_ID" ]; then
         read -rp "  App ID    : " APP_ID
-    else
-        info "复用已有 App ID: $APP_ID"
     fi
     if [ -z "$APP_SECRET" ]; then
         read -rsp "  App Secret: " APP_SECRET
         echo
-    else
-        info "复用已有 App Secret 配置"
     fi
     divider
     { [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; } \
