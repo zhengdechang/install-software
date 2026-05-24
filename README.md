@@ -32,3 +32,15 @@ curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/
 ```
 curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-hermes.sh -o /tmp/install-hermes.sh && bash /tmp/install-hermes.sh
 ```
+
+- install certbot, nginx, and certbot nginx plugin
+
+```
+curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/install-certbot-nginx.sh -o /tmp/install-certbot-nginx.sh && sudo bash /tmp/install-certbot-nginx.sh
+```
+
+- enable SSH port 22922
+
+```
+curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/enable-22922.sh -o /tmp/enable-22922.sh && sudo bash /tmp/enable-22922.sh 22922
+```
