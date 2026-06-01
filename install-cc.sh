@@ -930,13 +930,18 @@ TOML
             echo
             info "即将显示飞书二维码，请用飞书 App 扫码完成机器人创建..."
             info "（超时时间 10 分钟，按 Ctrl+C 可取消）"
+            local qr_png="/tmp/feishu-qr-$$.png"
+            info "二维码同时保存到: $qr_png"
             echo
-            cc-connect feishu setup --project default --timeout 600
+            QR_SMALL=1 cc-connect feishu setup --project default --timeout 600 --qr-image "$qr_png"
             local qr_rc=$?
             if [ "$qr_rc" -eq 0 ]; then
                 ok "飞书机器人配置完成！"
             else
                 err "飞书扫码配置失败（退出码: $qr_rc）"
+                if [ -f "$qr_png" ]; then
+                    warn "二维码已保存到 $qr_png，可用图片查看器打开后扫码"
+                fi
                 warn "可稍后手动执行: cc-connect feishu setup"
             fi
             ;;
