@@ -779,15 +779,101 @@ refresh_cc_connect_daemon() {
     cc-connect daemon status
 }
 
+_cc_connect_feishu_setup() {
+    echo
+    echo -e "${BOLD}  飞书机器人配置${NC}"
+    divider
+    echo -e "  ${CYAN}1)${NC}  扫码创建/绑定  ${YELLOW}← 推荐（无需手动输入 App ID）${NC}"
+    echo -e "  ${CYAN}2)${NC}  手动输入 App ID / App Secret"
+    echo -e "  ${CYAN}3)${NC}  跳过（稍后手动配置）"
+    echo
+    local feishu_choice
+    read -rp "  请选择 [1-3]: " feishu_choice
+
+    case "$feishu_choice" in
+        1)
+            echo
+            info "即将显示飞书二维码，请用飞书 App 扫码完成机器人创建..."
+            info "（超时时间 10 分钟，按 Ctrl+C 可取消）"
+            local qr_png="/tmp/feishu-qr-$$.png"
+            info "二维码同时保存到: $qr_png"
+            echo
+            QR_SMALL=1 cc-connect feishu setup --project default --timeout 600 --qr-image "$qr_png"
+            local qr_rc=$?
+            if [ "$qr_rc" -eq 0 ]; then
+                ok "飞书机器人配置完成！"
+            else
+                err "飞书扫码配置失败（退出码: $qr_rc）"
+                if [ -f "$qr_png" ]; then
+                    warn "二维码已保存到 $qr_png，可用图片查看器打开后扫码"
+                fi
+                warn "可稍后手动执行: cc-connect feishu setup"
+            fi
+            ;;
+        2)
+            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+                if ! confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
+                    APP_ID=""
+                    APP_SECRET=""
+                fi
+            fi
+            if [ -z "$APP_ID" ]; then
+                read -rp "  飞书 App ID (例: cli_xxxxxxxxxxxxxxxx): " APP_ID
+            fi
+            if [ -z "$APP_SECRET" ]; then
+                read -rsp "  飞书 App Secret: " APP_SECRET
+                echo
+            fi
+            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+                cc-connect feishu bind --project default --app "$APP_ID:$APP_SECRET"
+                if [ $? -eq 0 ]; then
+                    ok "飞书凭据绑定完成"
+                else
+                    err "飞书凭据绑定失败"
+                    warn "可稍后手动执行: cc-connect feishu bind --app <app_id:app_secret>"
+                fi
+            else
+                warn "未输入完整凭据，跳过飞书配置"
+                warn "稍后执行: cc-connect feishu setup"
+            fi
+            ;;
+        3|*)
+            warn "跳过飞书配置，稍后可执行: cc-connect feishu setup"
+            ;;
+    esac
+    divider
+}
+
 install_cc_connect() {
     header "cc-connect (飞书 AI 机器人)"
     load_nvm
     load_existing_feishu_config
 
     if is_cc_connect_installed; then
-        warn "cc-connect 已安装，跳过"
+        warn "cc-connect 已安装"
         cc-connect daemon status 2>/dev/null || true
-        return 0
+        echo
+        echo -e "  ${CYAN}1)${NC}  重新配置飞书（扫码/手动）"
+        echo -e "  ${CYAN}2)${NC}  重新安装 cc-connect"
+        echo -e "  ${CYAN}3)${NC}  跳过"
+        echo
+        local reinstall_choice
+        read -rp "  请选择 [1-3]: " reinstall_choice
+        case "$reinstall_choice" in
+            1)
+                # 直接跳到飞书配置部分
+                _cc_connect_feishu_setup
+                refresh_cc_connect_daemon
+                return 0
+                ;;
+            2)
+                info "重新安装 cc-connect..."
+                ;;
+            3|*)
+                info "跳过"
+                return 0
+                ;;
+        esac
     fi
 
     # 确保 npm 可用
@@ -913,71 +999,7 @@ TOML
     info "Bridge token:     $BRIDGE_TOKEN"
     info "Management token: $MGMT_TOKEN"
 
-    # 选择飞书凭据配置方式
-    echo
-    echo -e "${BOLD}  飞书机器人配置${NC}"
-    divider
-    echo -e "  ${CYAN}1)${NC}  扫码创建/绑定  ${YELLOW}← 推荐（无需手动输入 App ID）${NC}"
-    echo -e "  ${CYAN}2)${NC}  手动输入 App ID / App Secret"
-    echo -e "  ${CYAN}3)${NC}  跳过（稍后手动配置）"
-    echo
-    local feishu_choice
-    read -rp "  请选择 [1-3]: " feishu_choice
-
-    case "$feishu_choice" in
-        1)
-            # QR 扫码方式：cc-connect feishu setup 自动创建机器人
-            echo
-            info "即将显示飞书二维码，请用飞书 App 扫码完成机器人创建..."
-            info "（超时时间 10 分钟，按 Ctrl+C 可取消）"
-            local qr_png="/tmp/feishu-qr-$$.png"
-            info "二维码同时保存到: $qr_png"
-            echo
-            QR_SMALL=1 cc-connect feishu setup --project default --timeout 600 --qr-image "$qr_png"
-            local qr_rc=$?
-            if [ "$qr_rc" -eq 0 ]; then
-                ok "飞书机器人配置完成！"
-            else
-                err "飞书扫码配置失败（退出码: $qr_rc）"
-                if [ -f "$qr_png" ]; then
-                    warn "二维码已保存到 $qr_png，可用图片查看器打开后扫码"
-                fi
-                warn "可稍后手动执行: cc-connect feishu setup"
-            fi
-            ;;
-        2)
-            # 手动输入方式（兼容旧流程）
-            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
-                if ! confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
-                    APP_ID=""
-                    APP_SECRET=""
-                fi
-            fi
-            if [ -z "$APP_ID" ]; then
-                read -rp "  飞书 App ID (例: cli_xxxxxxxxxxxxxxxx): " APP_ID
-            fi
-            if [ -z "$APP_SECRET" ]; then
-                read -rsp "  飞书 App Secret: " APP_SECRET
-                echo
-            fi
-            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
-                cc-connect feishu bind --project default --app "$APP_ID:$APP_SECRET"
-                if [ $? -eq 0 ]; then
-                    ok "飞书凭据绑定完成"
-                else
-                    err "飞书凭据绑定失败"
-                    warn "可稍后手动执行: cc-connect feishu bind --app <app_id:app_secret>"
-                fi
-            else
-                warn "未输入完整凭据，跳过飞书配置"
-                warn "稍后执行: cc-connect feishu setup"
-            fi
-            ;;
-        3|*)
-            warn "跳过飞书配置，稍后可执行: cc-connect feishu setup"
-            ;;
-    esac
-    divider
+    _cc_connect_feishu_setup
 
     refresh_cc_connect_daemon
 }
