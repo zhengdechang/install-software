@@ -790,29 +790,6 @@ install_cc_connect() {
         return 0
     fi
 
-    # 已有凭据时询问是否复用
-    if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
-        echo
-        if ! confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
-            APP_ID=""
-            APP_SECRET=""
-        fi
-    fi
-
-    # 若未在"全部安装"流程中输入，则单独询问
-    if [ -z "$APP_ID" ]; then
-        read -rp "  飞书 App ID (例: cli_xxxxxxxxxxxxxxxx): " APP_ID
-    fi
-    if [ -z "$APP_SECRET" ]; then
-        read -rsp "  飞书 App Secret: " APP_SECRET
-        echo
-    fi
-
-    if [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; then
-        err "App ID 和 App Secret 不能为空，退出"
-        return 1
-    fi
-
     info "安装 cc-connect..."
     npm install -g cc-connect@latest
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 安装完成"
@@ -830,7 +807,7 @@ install_cc_connect() {
         return 1
     fi
 
-    info "写入配置 ~/.cc-connect/config.toml..."
+    info "写入基础配置 ~/.cc-connect/config.toml..."
     mkdir -p "$HOME/.cc-connect"
     cat > "$HOME/.cc-connect/config.toml" <<TOML
 data_dir = ""
@@ -849,16 +826,6 @@ language = "en"
       mode = "bypassPermissions"
       model = "claude-opus-4-7"
       work_dir = "$work_dir"
-
-  [[projects.platforms]]
-    type = "feishu"
-
-    [projects.platforms.options]
-      allow_from = "*"
-      app_id = "$APP_ID"
-      app_secret = "$APP_SECRET"
-      enable_feishu_card = true
-      progress_style = "card"
 
 [log]
   level = "info"
@@ -929,9 +896,70 @@ language = "en"
   token = "$MGMT_TOKEN"
   cors_origins = ["*"]
 TOML
-    ok "配置文件写入完成"
+    ok "基础配置写入完成"
     info "Bridge token:     $BRIDGE_TOKEN"
     info "Management token: $MGMT_TOKEN"
+
+    # 选择飞书凭据配置方式
+    echo
+    echo -e "${BOLD}  飞书机器人配置${NC}"
+    divider
+    echo -e "  ${CYAN}1)${NC}  扫码创建/绑定  ${YELLOW}← 推荐（无需手动输入 App ID）${NC}"
+    echo -e "  ${CYAN}2)${NC}  手动输入 App ID / App Secret"
+    echo -e "  ${CYAN}3)${NC}  跳过（稍后手动配置）"
+    echo
+    local feishu_choice
+    read -rp "  请选择 [1-3]: " feishu_choice
+
+    case "$feishu_choice" in
+        1)
+            # QR 扫码方式：cc-connect feishu setup 自动创建机器人
+            echo
+            info "即将显示飞书二维码，请用飞书 App 扫码完成机器人创建..."
+            info "（超时时间 10 分钟，按 Ctrl+C 可取消）"
+            echo
+            cc-connect feishu setup --project default --timeout 600
+            local qr_rc=$?
+            if [ "$qr_rc" -eq 0 ]; then
+                ok "飞书机器人配置完成！"
+            else
+                err "飞书扫码配置失败（退出码: $qr_rc）"
+                warn "可稍后手动执行: cc-connect feishu setup"
+            fi
+            ;;
+        2)
+            # 手动输入方式（兼容旧流程）
+            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+                if ! confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
+                    APP_ID=""
+                    APP_SECRET=""
+                fi
+            fi
+            if [ -z "$APP_ID" ]; then
+                read -rp "  飞书 App ID (例: cli_xxxxxxxxxxxxxxxx): " APP_ID
+            fi
+            if [ -z "$APP_SECRET" ]; then
+                read -rsp "  飞书 App Secret: " APP_SECRET
+                echo
+            fi
+            if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
+                cc-connect feishu bind --project default --app "$APP_ID:$APP_SECRET"
+                if [ $? -eq 0 ]; then
+                    ok "飞书凭据绑定完成"
+                else
+                    err "飞书凭据绑定失败"
+                    warn "可稍后手动执行: cc-connect feishu bind --app <app_id:app_secret>"
+                fi
+            else
+                warn "未输入完整凭据，跳过飞书配置"
+                warn "稍后执行: cc-connect feishu setup"
+            fi
+            ;;
+        3|*)
+            warn "跳过飞书配置，稍后可执行: cc-connect feishu setup"
+            ;;
+    esac
+    divider
 
     refresh_cc_connect_daemon
 }
@@ -966,7 +994,6 @@ update_cc_connect() {
 # ============================================================
 prompt_credentials() {
     load_existing_claude_config
-    load_existing_feishu_config
 
     echo
     echo -e "${BOLD}  Claude API 配置${NC}"
@@ -997,31 +1024,10 @@ prompt_credentials() {
         && warn "未输入 API Key，Claude Code 配置将跳过" \
         || ok "API Key 已记录"
 
-    echo
-    echo -e "${BOLD}  飞书应用凭据 (用于 lark-cli 和 cc-connect)${NC}"
-    divider
-    if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
-        if confirm_reuse "飞书凭据 (App ID: $APP_ID)"; then
-            info "复用已有 App ID: $APP_ID"
-            info "复用已有 App Secret 配置"
-        else
-            APP_ID=""
-            APP_SECRET=""
-        fi
-    fi
-    if [ -z "$APP_ID" ]; then
-        read -rp "  App ID    : " APP_ID
-    fi
-    if [ -z "$APP_SECRET" ]; then
-        read -rsp "  App Secret: " APP_SECRET
-        echo
-    fi
-    divider
-    { [ -z "$APP_ID" ] || [ -z "$APP_SECRET" ]; } \
-        && warn "未输入飞书凭据，相关配置步骤将跳过" \
-        || ok "飞书凭据已记录"
+    # 飞书凭据不再提前收集，cc-connect 安装时通过扫码或交互式输入
+    info "飞书凭据将在 cc-connect 安装步骤中通过扫码配置"
 
-    export APP_ID APP_SECRET ANTHROPIC_API_KEY_INPUT ANTHROPIC_BASE_URL_INPUT
+    export ANTHROPIC_API_KEY_INPUT ANTHROPIC_BASE_URL_INPUT
 }
 
 # ============================================================
@@ -1155,7 +1161,7 @@ main() {
             ;;
         2) install_nvm_node || return 1 ;;
         3) install_claude_code || return 1 ;;
-        4) prompt_credentials; install_feishu_cli || return 1 ;;
+        4) install_feishu_cli || return 1 ;;
         5) install_gstack || return 1 ;;
         6) install_cc_connect || return 1 ;;
         7) update_cc_connect || return 1 ;;
