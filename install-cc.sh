@@ -790,8 +790,21 @@ install_cc_connect() {
         return 0
     fi
 
+    # 确保 npm 可用
+    if ! has npm; then
+        warn "npm 未找到，尝试安装 NVM + Node.js..."
+        install_nvm_node || {
+            err "Node.js 安装失败，无法继续安装 cc-connect"
+            return 1
+        }
+        load_nvm
+    fi
+
     info "安装 cc-connect..."
-    npm install -g cc-connect@latest
+    npm install -g cc-connect@latest || {
+        err "cc-connect 安装失败"
+        return 1
+    }
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 安装完成"
 
     # 生成随机 token
