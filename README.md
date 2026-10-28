@@ -51,14 +51,23 @@ curl -fsSL https://raw.githubusercontent.com/zhengdechang/install-software/main/
 
 ## Mihomo 代理(vpn1)
 
-Linux / macOS 通用，直接用 mihomo 官方二进制运行，不需要 Docker。Linux 用 systemd 托管（默认开 TUN 全局接管），macOS 用 launchd 托管（默认只开代理端口）。
+Linux / macOS 通用，直接用 mihomo 官方二进制运行，不需要 Docker。Linux 用 systemd 托管，macOS 用 launchd 托管。默认开 TUN + 全局模式，本机所有流量都走 vpn1（内网段与节点 IP 除外）。
+
+上游节点支持 VLESS + Reality / HTTP(S) / SOCKS5，用 `VPN1_LINK` 传链接：
 
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/zhengdechang/install-software/main/install-mihomo-proxy.sh?t=$(date +%s)" -o /tmp/install-mihomo-proxy.sh && \
 VPN1_LINK='vless://uuid@host:port?security=reality&sni=...&pbk=...&sid=...#vpn1' bash /tmp/install-mihomo-proxy.sh install
 ```
 
-不传 `VPN1_LINK` 时会提示粘贴 vless 链接。安装后代理端口 `7890`（HTTP/SOCKS5），认证信息在安装目录的 `data/credentials`。
+```bash
+VPN1_LINK='http://user:pass@host:port'    # HTTP 代理(https:// 为 TLS)
+VPN1_LINK='socks5://user:pass@host:port'  # SOCKS5,用户名密码可省略,特殊字符需 URL 编码
+```
+
+也可以按字段传：`VPN1_TYPE=http|socks5 VPN1_SERVER=... VPN1_PORT=... VPN1_USER=... VPN1_PASS=...`。
+
+不传时会提示粘贴链接。安装后代理端口 `7890`（HTTP/SOCKS5），认证信息在安装目录的 `data/credentials`。配置持久化在 `data/config.yaml`，开机自启；再次 install 不传链接则沿用原配置。
 
 管理（安装目录默认 root 为 `/opt/mihomo-proxy`，普通用户为 `~/mihomo-proxy`）：
 
@@ -68,7 +77,11 @@ VPN1_LINK='vless://uuid@host:port?security=reality&sni=...&pbk=...&sid=...#vpn1'
 ~/mihomo-proxy/mihomo.sh restart
 ~/mihomo-proxy/mihomo.sh status
 ~/mihomo-proxy/mihomo.sh logs
+~/mihomo-proxy/mihomo.sh switch 'socks5://user:pass@host:port'  # 切换上游节点,7890 认证不变,校验失败自动回滚
+~/mihomo-proxy/mihomo.sh tun on     # 开 TUN 全局接管(远程机器慎用,先确认节点能通)
+~/mihomo-proxy/mihomo.sh tun off    # 关 TUN,只留 7890 端口
+~/mihomo-proxy/mihomo.sh mode rule  # 按规则分流(国内直连);mode global 改回全局
 ~/mihomo-proxy/mihomo.sh uninstall  # 卸载服务,保留配置
 ```
 
-可选环境变量：`MIHOMO_TUN=true|false`（macOS 开 TUN 需要 sudo）、`PROXY_USER` / `PROXY_PASS`、`GH_PROXY=https://gh-proxy.com/`（国内加速下载）、`MIHOMO_DIR`。
+可选环境变量：`MIHOMO_TUN=true|false`（默认 true，macOS 开 TUN 需要 sudo）、`MIHOMO_MODE=global|rule`（默认 global）——这两项首装用默认值，之后沿用配置里的值；另有 `PROXY_USER` / `PROXY_PASS`、`GH_PROXY=https://gh-proxy.com/`（国内加速下载）、`MIHOMO_DIR`。

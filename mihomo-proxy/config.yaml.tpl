@@ -1,5 +1,5 @@
 allow-lan: true
-mode: rule
+mode: __MODE__
 log-level: silent
 ipv6: true
 unified-delay: true
@@ -187,20 +187,7 @@ tun:
     - 158.62.212.21/32
     - 20.80.89.42/32
 proxies:
-  - name: vpn1
-    type: vless
-    server: __VPN1_SERVER__
-    port: __VPN1_PORT__
-    uuid: __VPN1_UUID__
-    network: tcp
-    udp: true
-    tls: true
-    flow: xtls-rprx-vision
-    servername: __VPN1_SNI__
-    reality-opts:
-      public-key: __VPN1_PUBLIC_KEY__
-      short-id: "__VPN1_SHORT_ID__"
-    client-fingerprint: chrome
+__VPN1_PROXY__
 proxy-groups:
   - name: GLOBAL
     type: select
