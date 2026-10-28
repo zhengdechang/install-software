@@ -417,18 +417,28 @@ svc_restart() {
 # ---------------------------------------------------------------- 命令
 
 print_usage_hint() {
-  local cred
+  local cred test_cmd
   cred="$(cat "$DATA_DIR/credentials" 2>/dev/null || echo 'user:pass')"
+  if [[ "$MIHOMO_TUN" == "true" ]]; then
+    test_cmd="curl https://api.ipify.org"
+  else
+    test_cmd="curl -x http://${cred}@127.0.0.1:7890 https://api.ipify.org"
+  fi
   cat <<EOF
 
-代理端口 7890(HTTP/SOCKS5 混合),认证 ${cred}
-测试出口 IP:
-  curl --proxy "http://${cred}@127.0.0.1:7890" https://api.ipify.org
-管理:
-  $MIHOMO_DIR/mihomo.sh start|stop|restart|status|logs|uninstall
-  $MIHOMO_DIR/mihomo.sh switch '<vless/http/https/socks5 链接>'   切换上游节点
-  $MIHOMO_DIR/mihomo.sh tun on|off                                开关 TUN 接管本机流量
-  $MIHOMO_DIR/mihomo.sh mode global|rule                          全局走 vpn1 / 国内直连分流
+  TUN      ${MIHOMO_TUN}
+  模式     ${MIHOMO_MODE}
+  配置     $DATA_DIR/config.yaml
+  认证     $DATA_DIR/credentials
+  代理     127.0.0.1:7890  (HTTP/SOCKS5, ${cred})
+
+  测试出口: ${test_cmd}
+
+  管理: $MIHOMO_DIR/mihomo.sh <命令>
+    start / stop / restart / status / logs / uninstall
+    switch '<链接>'      切换上游节点
+    tun on|off           开关 TUN
+    mode global|rule     全局 / 国内直连分流
 EOF
 }
 
@@ -531,6 +541,7 @@ cmd_install() {
 }
 
 cmd_status() {
+  echo "TUN=$MIHOMO_TUN  模式=$MIHOMO_MODE  配置 $DATA_DIR/config.yaml"
   if [[ "$OS" == "Linux" ]]; then
     systemctl status "$SERVICE" --no-pager || true
   elif mac_loaded; then
