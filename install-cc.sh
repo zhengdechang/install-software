@@ -133,6 +133,42 @@ PYEOF
     ANTHROPIC_BASE_URL_INPUT="$(echo "$out" | sed -n '2p')"
 }
 
+mask_secret() {
+    local s="$1"
+    if [ "${#s}" -le 10 ]; then
+        echo "****"
+    else
+        echo "${s:0:6}****${s: -4}"
+    fi
+}
+
+prompt_api_config() {
+    # 先输 Base URL，再输 API Key；已有值时直接回车保留
+    local cur_base="${ANTHROPIC_BASE_URL_INPUT:-}"
+    local cur_key="${ANTHROPIC_API_KEY_INPUT:-}"
+    local ans
+
+    if [ -n "$cur_base" ]; then
+        read -rp "  Base URL [回车保留 $cur_base]: " ans
+        ANTHROPIC_BASE_URL_INPUT="${ans:-$cur_base}"
+    else
+        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+    fi
+
+    if [ -n "$cur_key" ]; then
+        read -rsp "  API Key [回车保留 $(mask_secret "$cur_key")]: " ans
+        echo
+        ANTHROPIC_API_KEY_INPUT="${ans:-$cur_key}"
+    else
+        read -rsp "  API Key (sk-...): " ANTHROPIC_API_KEY_INPUT
+        echo
+    fi
+
+    # 去掉粘贴时带进来的空白
+    ANTHROPIC_BASE_URL_INPUT="$(printf '%s' "$ANTHROPIC_BASE_URL_INPUT" | tr -d '[:space:]')"
+    ANTHROPIC_API_KEY_INPUT="$(printf '%s' "$ANTHROPIC_API_KEY_INPUT" | tr -d '[:space:]')"
+}
+
 load_existing_feishu_config() {
     # Reuse existing Feishu app_id/app_secret from ~/.cc-connect/config.toml if missing.
     [ -z "${APP_ID:-}" ] || [ -z "${APP_SECRET:-}" ] || return 0
@@ -278,10 +314,11 @@ install_nvm_node() {
 write_claude_settings() {
     local api_key="$1"
     local base_url="$2"
+    local keep_model="${3:-0}"
 
     mkdir -p "$HOME/.claude"
 
-    CLAUDE_API_KEY="$api_key" CLAUDE_BASE_URL="$base_url" python3 - <<'PYEOF'
+    KEEP_MODEL="$keep_model" CLAUDE_API_KEY="$api_key" CLAUDE_BASE_URL="$base_url" python3 - <<'PYEOF'
 import json, os
 
 settings_path = os.path.expanduser('~/.claude/settings.json')
@@ -294,7 +331,9 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
-settings['model'] = 'claude-opus-4-7'
+# 传了 KEEP_MODEL=1（只换 Key/URL）时不动用户已选的模型
+if os.environ.get('KEEP_MODEL') != '1':
+    settings['model'] = 'claude-opus-4-7'
 
 env = settings.setdefault('env', {})
 env.pop('ANTHROPIC_API_KEY', None)          # 移除旧格式
@@ -378,6 +417,8 @@ install_claude_code() {
         ok "Claude Code 安装完成"
     fi
 
+    local old_key="$ANTHROPIC_API_KEY_INPUT"
+
     # 已有配置时询问是否复用
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ] && has_claude_auth_config; then
         echo
@@ -388,19 +429,13 @@ install_claude_code() {
             divider
             return 0
         fi
-        ANTHROPIC_API_KEY_INPUT=""
-        ANTHROPIC_BASE_URL_INPUT=""
-        read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
-        echo
-        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+        prompt_api_config
         divider
     elif [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
         echo
         echo -e "${BOLD}  Claude API 配置${NC}"
         divider
-        read -rsp "  Anthropic API Key (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
-        echo
-        read -rp "  Base URL (留空使用官方 https://api.anthropic.com): " ANTHROPIC_BASE_URL_INPUT
+        prompt_api_config
         divider
     fi
 
@@ -409,6 +444,39 @@ install_claude_code() {
         warn "请手动设置: export ANTHROPIC_API_KEY=your_key"
         return 0
     fi
+
+    apply_api_config "$old_key" 0
+}
+
+# ============================================================
+# 只更新 API Key / Base URL（Claude Code + cc-connect 一起换）
+# ============================================================
+update_api_config() {
+    header "更新 API Key / Base URL"
+    load_nvm
+    ANTHROPIC_API_KEY_INPUT=""
+    ANTHROPIC_BASE_URL_INPUT=""
+    load_existing_claude_config
+    local old_key="$ANTHROPIC_API_KEY_INPUT"
+
+    echo -e "  将同时更新: $SHELL_RC、~/.claude/settings.json、~/.cc-connect/config.toml"
+    divider
+    prompt_api_config
+    divider
+
+    if [ -z "$ANTHROPIC_API_KEY_INPUT" ]; then
+        err "API Key 不能为空，未做任何修改"
+        return 1
+    fi
+
+    apply_api_config "$old_key" 1
+}
+
+# 把 ANTHROPIC_API_KEY_INPUT / ANTHROPIC_BASE_URL_INPUT 写到所有用到的地方并重启 cc-connect
+# $1 = 旧 key（用来在 cc-connect 里找同 key 的 provider）  $2 = 1 时保留已选模型
+apply_api_config() {
+    local old_key="$1"
+    local keep_model="${2:-0}"
 
     # 写入 shell RC 文件（去重后追加）
     touch "$SHELL_RC"
@@ -430,7 +498,13 @@ install_claude_code() {
         || info "Base URL: 使用官方默认"
 
     # 同步写入 ~/.claude/settings.json，供 daemon 读取
-    write_claude_settings "$ANTHROPIC_API_KEY_INPUT" "$ANTHROPIC_BASE_URL_INPUT"
+    write_claude_settings "$ANTHROPIC_API_KEY_INPUT" "$ANTHROPIC_BASE_URL_INPUT" "$keep_model"
+
+    # cc-connect 的 providers 里单独存了 key/url，也要一起换
+    if [ -f "$HOME/.cc-connect/config.toml" ]; then
+        set_cc_connect_api_config "$old_key" "$ANTHROPIC_API_KEY_INPUT" "$ANTHROPIC_BASE_URL_INPUT" \
+            || warn "未能更新 ~/.cc-connect/config.toml，请手动检查"
+    fi
 
     # 若 cc-connect daemon 已在运行，自动重启以加载新配置
     if has cc-connect && cc-connect daemon status 2>&1 | grep -q "Running"; then
@@ -758,6 +832,101 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PYEOF
 }
 
+set_cc_connect_api_config() {
+    # $1 旧 key  $2 新 key  $3 新 base url（空 = 官方，删掉 base_url）
+    # 只改 api_key 等于旧 key 的 provider 段；没有匹配时改当前项目选中的 provider。
+    # 配置里没有任何 provider（直接读 ~/.claude/settings.json）时什么都不做。
+    local cfg="$HOME/.cc-connect/config.toml"
+    [ -f "$cfg" ] || return 1
+    cp "$cfg" "$cfg.bak.$(date +%Y%m%d%H%M%S)"
+
+    OLD_KEY="$1" NEW_KEY="$2" NEW_BASE="$3" python3 - "$cfg" <<'PYEOF'
+import json, os, re, sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+old_key = os.environ.get("OLD_KEY", "")
+new_key = os.environ["NEW_KEY"]
+new_base = os.environ.get("NEW_BASE", "")
+
+def q(s):
+    return json.dumps(s, ensure_ascii=False)
+
+# 切出 provider 段: [start, end)
+blocks = []
+cur = None
+for i, line in enumerate(lines):
+    s = line.strip()
+    if s.startswith("["):
+        if cur is not None:
+            cur["end"] = i
+            blocks.append(cur)
+            cur = None
+        if s in ("[[providers]]", "[[projects.agent.providers]]"):
+            cur = {"start": i}
+if cur is not None:
+    cur["end"] = len(lines)
+    blocks.append(cur)
+
+if not blocks:
+    print("no-providers")
+    raise SystemExit(0)
+
+kv = re.compile(r'^(\s*)(name|api_key|base_url)\s*=\s*"(.*)"\s*$')
+for b in blocks:
+    b["fields"] = {}
+    for i in range(b["start"] + 1, b["end"]):
+        m = kv.match(lines[i])
+        if m:
+            b["fields"][m.group(2)] = (i, m.group(1), m.group(3))
+
+targets = [b for b in blocks if old_key and b["fields"].get("api_key", (0, "", None))[2] == old_key]
+if not targets:
+    active = None
+    for line in lines:
+        m = re.match(r'^\s*provider\s*=\s*"(.*)"\s*$', line)
+        if m:
+            active = m.group(1)
+            break
+    if active:
+        targets = [b for b in blocks if b["fields"].get("name", (0, "", None))[2] == active]
+if not targets:
+    print("no-match")
+    sys.exit(1)
+
+delete = set()
+inserts = {}
+for b in targets:
+    f = b["fields"]
+    if "api_key" in f:
+        i, ind, _ = f["api_key"]
+        lines[i] = f"{ind}api_key = {q(new_key)}"
+    if new_base:
+        if "base_url" in f:
+            i, ind, _ = f["base_url"]
+            lines[i] = f"{ind}base_url = {q(new_base)}"
+        elif "api_key" in f:
+            i, ind, _ = f["api_key"]
+            inserts[i] = f"{ind}base_url = {q(new_base)}"
+    elif "base_url" in f:
+        delete.add(f["base_url"][0])
+
+out = []
+for i, line in enumerate(lines):
+    if i in delete:
+        continue
+    out.append(line)
+    if i in inserts:
+        out.append(inserts[i])
+path.write_text("\n".join(out) + "\n", encoding="utf-8")
+names = ", ".join(b["fields"].get("name", (0, "", "?"))[2] for b in targets)
+print(f"updated {len(targets)}: {names}")
+PYEOF
+    local rc=$?
+    [ "$rc" -eq 0 ] && ok "已更新 ~/.cc-connect/config.toml 中的 provider（原文件已备份为 config.toml.bak.*）"
+    return $rc
+}
+
 refresh_cc_connect_daemon() {
     info "配置后台服务..."
     if cc-connect daemon status 2>&1 | grep -qE "Running|Stopped|Installed"; then
@@ -1016,12 +1185,9 @@ update_cc_connect() {
     info "更新 cc-connect..."
     npm install -g cc-connect@latest
     ok "cc-connect $(cc-connect --version 2>&1 | grep -oE 'v[0-9]+\.[0-9]+\.[^ ]+') 更新完成"
-    set_claude_settings_model_opus_47
+    # 只升级程序，不改模型（要换模型用菜单 9）
 
     if [ -f "$HOME/.cc-connect/config.toml" ]; then
-        if ! set_cc_connect_agent_model_opus_47; then
-            warn "未能更新 ~/.cc-connect/config.toml，请手动检查"
-        fi
         refresh_cc_connect_daemon
     else
         warn "未找到 ~/.cc-connect/config.toml，仅完成 cc-connect 更新"
@@ -1161,10 +1327,11 @@ menu() {
     echo -e "  ${YELLOW}7)${NC}  更新 cc-connect"
     echo -e "  ${YELLOW}8)${NC}  重启服务"
     echo -e "  ${YELLOW}9)${NC}  Claude模型更新4.7"
+    echo -e "  ${YELLOW}10)${NC} 更新 Base URL / API Key（Claude Code + cc-connect）"
     divider
     echo -e "  ${RED}0)${NC}  退出"
     echo
-    read -rp "  请输入选项 [0-9]: " CHOICE
+    read -rp "  请输入选项 [0-10]: " CHOICE
 }
 
 # ============================================================
@@ -1223,6 +1390,7 @@ main() {
                 warn "未找到 ~/.cc-connect/config.toml，仅更新 Claude settings"
             fi
             ;;
+        10) update_api_config || return 1 ;;
         0) echo "退出。"; exit 0 ;;
         *) err "无效选项: $CHOICE"; exit 1 ;;
     esac
